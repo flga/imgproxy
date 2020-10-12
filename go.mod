@@ -16,7 +16,7 @@ require (
 	github.com/google/uuid v1.1.1 // indirect
 	github.com/honeybadger-io/honeybadger-go v0.5.0
 	github.com/kardianos/osext v0.0.0-20190222173326-2bc1f35cddc0 // indirect
-	github.com/matoous/go-nanoid v1.4.1
+	github.com/matoous/go-nanoid v1.5.0
 	github.com/newrelic/go-agent v3.8.1+incompatible
 	github.com/prometheus/client_golang v1.7.1
 	github.com/sirupsen/logrus v1.6.0
