@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,19 +25,19 @@ var eTagCalcPool = sync.Pool{
 	},
 }
 
-func calcETag(ctx context.Context) string {
+func calcETag(imgdata *imageData, po *processingOptions) string {
 	c := eTagCalcPool.Get().(*eTagCalc)
 	defer eTagCalcPool.Put(c)
 
 	c.hash.Reset()
-	c.hash.Write(getImageData(ctx).Data)
+	c.hash.Write(imgdata.Data)
 	footprint := c.hash.Sum(nil)
 
 	c.hash.Reset()
 	c.hash.Write(footprint)
 	c.hash.Write([]byte(version))
 	c.enc.Encode(conf)
-	c.enc.Encode(getProcessingOptions(ctx))
+	c.enc.Encode(po)
 
 	return hex.EncodeToString(c.hash.Sum(nil))
 }

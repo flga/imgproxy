@@ -13,9 +13,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"unsafe"
+
+	"github.com/mattn/go-pointer"
 )
 
 type vipsImage struct {
@@ -180,117 +183,109 @@ func (img *vipsImage) Load(data []byte, imgtype imageType, shrink int, scale flo
 	return nil
 }
 
-func (img *vipsImage) Save(imgtype imageType, quality int, stripMeta bool) ([]byte, context.CancelFunc, error) {
+func (img *vipsImage) Save(w io.Writer, imgtype imageType, quality int, stripMeta bool) (context.CancelFunc, error) {
 	if imgtype == imageTypeICO {
-		b, err := img.SaveAsIco()
-		return b, func() {}, err
+		return func() {}, img.SaveAsIco(w)
 	}
-
-	var ptr unsafe.Pointer
 
 	cancel := func() {
-		C.g_free_go(&ptr)
+		// don't think we actually need this
 	}
 
-	err := C.int(0)
+	wp := pointer.Save(w)
+	defer pointer.Unref(wp)
 
-	imgsize := C.size_t(0)
+	target := C.imgproxy_new_writer_target(wp)
+	defer C.g_object_unref(C.gpointer(target))
+	err := C.int(0)
 
 	switch imgtype {
 	case imageTypeJPEG:
-		err = C.vips_jpegsave_go(img.VipsImage, &ptr, &imgsize, C.int(quality), vipsConf.JpegProgressive, gbool(stripMeta))
+		err = C.vips_jpegsave_go(img.VipsImage, target, C.int(quality), vipsConf.JpegProgressive, gbool(stripMeta))
 	case imageTypePNG:
-		err = C.vips_pngsave_go(img.VipsImage, &ptr, &imgsize, vipsConf.PngInterlaced, vipsConf.PngQuantize, vipsConf.PngQuantizationColors)
+		err = C.vips_pngsave_go(img.VipsImage, target, vipsConf.PngInterlaced, vipsConf.PngQuantize, vipsConf.PngQuantizationColors)
 	case imageTypeWEBP:
-		err = C.vips_webpsave_go(img.VipsImage, &ptr, &imgsize, C.int(quality), gbool(stripMeta))
+		err = C.vips_webpsave_go(img.VipsImage, target, C.int(quality), gbool(stripMeta))
 	case imageTypeGIF:
-		err = C.vips_gifsave_go(img.VipsImage, &ptr, &imgsize)
+		err = C.vips_gifsave_go(img.VipsImage, target)
 	case imageTypeAVIF:
-		err = C.vips_avifsave_go(img.VipsImage, &ptr, &imgsize, C.int(quality))
+		err = C.vips_avifsave_go(img.VipsImage, target, C.int(quality))
 	case imageTypeBMP:
-		err = C.vips_bmpsave_go(img.VipsImage, &ptr, &imgsize)
+		err = C.vips_bmpsave_go(img.VipsImage, target)
 	case imageTypeTIFF:
-		err = C.vips_tiffsave_go(img.VipsImage, &ptr, &imgsize, C.int(quality))
+		err = C.vips_tiffsave_go(img.VipsImage, target, C.int(quality))
 	}
 	if err != 0 {
-		C.g_free_go(&ptr)
-		return nil, cancel, vipsError()
+		return cancel, vipsError()
 	}
 
-	b := ptrToBytes(ptr, int(imgsize))
-
-	return b, cancel, nil
+	return cancel, nil
 }
 
-func (img *vipsImage) SaveAsIco() ([]byte, error) {
+func (img *vipsImage) SaveAsIco(w io.Writer) error {
 	if img.Width() > 256 || img.Height() > 256 {
-		return nil, errors.New("Image dimensions is too big. Max dimension size for ICO is 256")
+		return errors.New("Image dimensions is too big. Max dimension size for ICO is 256")
 	}
 
-	var ptr unsafe.Pointer
-	imgsize := C.size_t(0)
+	var imgData bytes.Buffer
+	wp := pointer.Save(imgData)
+	defer pointer.Unref(wp)
 
-	defer func() {
-		C.g_free_go(&ptr)
-	}()
+	target := C.imgproxy_new_writer_target(wp)
+	defer C.g_object_unref(C.gpointer(target))
 
-	if C.vips_pngsave_go(img.VipsImage, &ptr, &imgsize, 0, 0, 256) != 0 {
-		return nil, vipsError()
+	if C.vips_pngsave_go(img.VipsImage, target, 0, 0, 256) != 0 {
+		return vipsError()
 	}
-
-	b := ptrToBytes(ptr, int(imgsize))
-
-	buf := new(bytes.Buffer)
-	buf.Grow(22 + int(imgsize))
 
 	// ICONDIR header
-	if _, err := buf.Write([]byte{0, 0, 1, 0, 1, 0}); err != nil {
-		return nil, err
+	if _, err := w.Write([]byte{0, 0, 1, 0, 1, 0}); err != nil {
+		return err
 	}
 
 	// ICONDIRENTRY
-	if _, err := buf.Write([]byte{
+	if _, err := w.Write([]byte{
 		byte(img.Width() % 256),
 		byte(img.Height() % 256),
 	}); err != nil {
-		return nil, err
+		return err
 	}
 	// Number of colors. Not supported in our case
-	if err := buf.WriteByte(0); err != nil {
-		return nil, err
+	if _, err := w.Write([]byte{0}); err != nil {
+		return err
 	}
 	// Reserved
-	if err := buf.WriteByte(0); err != nil {
-		return nil, err
+	if _, err := w.Write([]byte{0}); err != nil {
+		return err
 	}
 	// Color planes. Always 1 in our case
-	if _, err := buf.Write([]byte{1, 0}); err != nil {
-		return nil, err
+	if _, err := w.Write([]byte{1, 0}); err != nil {
+		return err
 	}
 	// Bits per pixel
 	if img.HasAlpha() {
-		if _, err := buf.Write([]byte{32, 0}); err != nil {
-			return nil, err
+		if _, err := w.Write([]byte{32, 0}); err != nil {
+			return err
 		}
 	} else {
-		if _, err := buf.Write([]byte{24, 0}); err != nil {
-			return nil, err
+		if _, err := w.Write([]byte{24, 0}); err != nil {
+			return err
 		}
 	}
 	// Image data size
-	if err := binary.Write(buf, binary.LittleEndian, uint32(imgsize)); err != nil {
-		return nil, err
+	if err := binary.Write(w, binary.LittleEndian, uint32(imgData.Len())); err != nil {
+		return err
 	}
 	// Image data offset. Always 22 in our case
-	if _, err := buf.Write([]byte{22, 0, 0, 0}); err != nil {
-		return nil, err
+	if _, err := w.Write([]byte{22, 0, 0, 0}); err != nil {
+		return err
 	}
 
-	if _, err := buf.Write(b); err != nil {
-		return nil, err
+	if _, err := w.Write(imgData.Bytes()); err != nil {
+		return err
 	}
 
-	return buf.Bytes(), nil
+	return nil
 }
 
 func (img *vipsImage) Clear() {
@@ -632,4 +627,26 @@ func (img *vipsImage) ApplyWatermark(wm *vipsImage, opacity float64) error {
 	C.swap_and_clear(&img.VipsImage, tmp)
 
 	return nil
+}
+
+//export imgproxy_write
+func imgproxy_write(target *C.VipsTargetCustom, buffer unsafe.Pointer, length C.long, user unsafe.Pointer) C.long {
+	v := pointer.Restore(user).(io.Writer)
+	d := C.GoBytes(buffer, C.int(length))
+	n, err := v.Write(d)
+	if err != nil {
+		return -1
+	}
+	return C.long(n)
+}
+
+//export imgproxy_finish
+func imgproxy_finish(target *C.VipsTargetCustom, user unsafe.Pointer) {
+	u := (interface{})(user)
+	if flusher, ok := u.(interface{ Flush() }); ok {
+		flusher.Flush()
+	}
+	if closer, ok := u.(io.Closer); ok {
+		closer.Close()
+	}
 }

@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -54,24 +54,21 @@ func initProcessingHandler() error {
 	return nil
 }
 
-func respondWithImage(ctx context.Context, reqID string, r *http.Request, rw http.ResponseWriter, data []byte) {
-	po := getProcessingOptions(ctx)
+func prerespondWithImage(ctx context.Context, reqID string, imageURL, cacheControl, expires string, po *processingOptions, r *http.Request, rw http.ResponseWriter) (w io.Writer, flush context.CancelFunc) {
 
 	var contentDisposition string
 	if len(po.Filename) > 0 {
 		contentDisposition = po.Format.ContentDisposition(po.Filename)
 	} else {
-		contentDisposition = po.Format.ContentDispositionFromURL(getImageURL(ctx))
+		contentDisposition = po.Format.ContentDispositionFromURL(imageURL)
 	}
 
 	rw.Header().Set("Content-Type", po.Format.Mime())
 	rw.Header().Set("Content-Disposition", contentDisposition)
 
-	var cacheControl, expires string
-
-	if conf.CacheControlPassthrough {
-		cacheControl = getCacheControlHeader(ctx)
-		expires = getExpiresHeader(ctx)
+	if !conf.CacheControlPassthrough {
+		cacheControl = ""
+		expires = ""
 	}
 
 	if len(cacheControl) == 0 && len(expires) == 0 {
@@ -90,39 +87,27 @@ func respondWithImage(ctx context.Context, reqID string, r *http.Request, rw htt
 		rw.Header().Set("Vary", headerVaryValue)
 	}
 
+	logResponse(reqID, r, 200, nil, &imageURL, po)
+
 	if conf.GZipCompression > 0 && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		buf := responseGzipBufPool.Get(0)
 		defer responseGzipBufPool.Put(buf)
 
 		gz := responseGzipPool.Get(buf)
-		defer responseGzipPool.Put(gz)
-
-		gz.Write(data)
-		gz.Close()
-
+		gz.Reset(rw)
 		rw.Header().Set("Content-Encoding", "gzip")
-		rw.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
-
-		rw.WriteHeader(200)
-		rw.Write(buf.Bytes())
-	} else {
-		rw.Header().Set("Content-Length", strconv.Itoa(len(data)))
-		rw.WriteHeader(200)
-		rw.Write(data)
+		return gz, func() {
+			gz.Close()
+			responseGzipPool.Put(gz)
+		}
 	}
 
-	imageURL := getImageURL(ctx)
-
-	logResponse(reqID, r, 200, nil, &imageURL, po)
-	// logResponse(reqID, r, 200, getTimerSince(ctx), getImageURL(ctx), po))
+	return rw, func() {}
 }
 
-func respondWithNotModified(ctx context.Context, reqID string, r *http.Request, rw http.ResponseWriter) {
+func respondWithNotModified(ctx context.Context, reqID string, imageURL string, po *processingOptions, r *http.Request, rw http.ResponseWriter) {
 	rw.WriteHeader(304)
-
-	imageURL := getImageURL(ctx)
-
-	logResponse(reqID, r, 304, nil, &imageURL, getProcessingOptions(ctx))
+	logResponse(reqID, r, 304, nil, &imageURL, po)
 }
 
 func handleProcessing(reqID string, rw http.ResponseWriter, r *http.Request) {
@@ -149,12 +134,12 @@ func handleProcessing(reqID string, rw http.ResponseWriter, r *http.Request) {
 	ctx, timeoutCancel := context.WithTimeout(ctx, time.Duration(conf.WriteTimeout)*time.Second)
 	defer timeoutCancel()
 
-	ctx, err := parsePath(ctx, r)
+	imgURL, po, err := parsePath(ctx, r)
 	if err != nil {
 		panic(err)
 	}
 
-	ctx, downloadcancel, err := downloadImage(ctx)
+	imgdata, cacheControl, expires, downloadcancel, err := downloadImage(ctx, imgURL)
 	defer downloadcancel()
 	if err != nil {
 		if newRelicEnabled {
@@ -173,17 +158,17 @@ func handleProcessing(reqID string, rw http.ResponseWriter, r *http.Request) {
 		}
 
 		logWarning("Could not load image. Using fallback image: %s", err.Error())
-		ctx = context.WithValue(ctx, imageDataCtxKey, fallbackImage)
+		imgdata = fallbackImage
 	}
 
 	checkTimeout(ctx)
 
 	if conf.ETagEnabled {
-		eTag := calcETag(ctx)
+		eTag := calcETag(imgdata, po)
 		rw.Header().Set("ETag", eTag)
 
 		if eTag == r.Header.Get("If-None-Match") {
-			respondWithNotModified(ctx, reqID, r, rw)
+			respondWithNotModified(ctx, reqID, imgURL, po, r, rw)
 			return
 		}
 	}
@@ -191,21 +176,36 @@ func handleProcessing(reqID string, rw http.ResponseWriter, r *http.Request) {
 	checkTimeout(ctx)
 
 	if len(conf.SkipProcessingFormats) > 0 {
-		imgdata := getImageData(ctx)
-		po := getProcessingOptions(ctx)
-
 		if imgdata.Type == po.Format || po.Format == imageTypeUnknown {
 			for _, f := range conf.SkipProcessingFormats {
 				if f == imgdata.Type {
 					po.Format = imgdata.Type
-					respondWithImage(ctx, reqID, r, rw, imgdata.Data)
+					w, done := prerespondWithImage(ctx, reqID, imgURL, cacheControl, expires, po, r, rw)
+					defer done()
+					w.Write(imgdata.Data)
 					return
 				}
 			}
 		}
 	}
 
-	imageData, processcancel, err := processImage(ctx)
+	if po.Format == imageTypeUnknown {
+		switch {
+		case po.PreferWebP && imageTypeSaveSupport(imageTypeWEBP):
+			po.Format = imageTypeWEBP
+		case imageTypeSaveSupport(imgdata.Type) && imageTypeGoodForWeb(imgdata.Type):
+			po.Format = imgdata.Type
+		default:
+			po.Format = imageTypeJPEG
+		}
+	} else if po.EnforceWebP && imageTypeSaveSupport(imageTypeWEBP) {
+		po.Format = imageTypeWEBP
+	}
+
+	w, done := prerespondWithImage(ctx, reqID, imgURL, cacheControl, expires, po, r, rw)
+	defer done()
+
+	processcancel, err := processImage(ctx, w, po, imgdata)
 	defer processcancel()
 	if err != nil {
 		if newRelicEnabled {
@@ -219,5 +219,4 @@ func handleProcessing(reqID string, rw http.ResponseWriter, r *http.Request) {
 
 	checkTimeout(ctx)
 
-	respondWithImage(ctx, reqID, r, rw, imageData)
 }

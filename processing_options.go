@@ -158,10 +158,8 @@ type processingOptions struct {
 }
 
 const (
-	imageURLCtxKey          = ctxKey("imageUrl")
-	processingOptionsCtxKey = ctxKey("processingOptions")
-	urlTokenPlain           = "plain"
-	maxClientHintDPR        = 8
+	urlTokenPlain    = "plain"
+	maxClientHintDPR = 8
 
 	msgForbidden     = "Forbidden"
 	msgInvalidURL    = "Invalid URL"
@@ -1088,7 +1086,7 @@ func parsePathBasic(parts []string, headers *processingHeaders) (string, *proces
 	return url, po, nil
 }
 
-func parsePath(ctx context.Context, r *http.Request) (context.Context, error) {
+func parsePath(ctx context.Context, r *http.Request) (string, *processingOptions, error) {
 	var err error
 
 	path := trimAfter(r.RequestURI, '?')
@@ -1102,12 +1100,12 @@ func parsePath(ctx context.Context, r *http.Request) (context.Context, error) {
 	parts := strings.Split(path, "/")
 
 	if len(parts) < 2 {
-		return ctx, newError(404, fmt.Sprintf("Invalid path: %s", path), msgInvalidURL)
+		return "", nil, newError(404, fmt.Sprintf("Invalid path: %s", path), msgInvalidURL)
 	}
 
 	if !conf.AllowInsecure {
 		if err = validatePath(parts[0], strings.TrimPrefix(path, parts[0])); err != nil {
-			return ctx, newError(403, err.Error(), msgForbidden)
+			return "", nil, newError(403, err.Error(), msgForbidden)
 		}
 	}
 
@@ -1130,24 +1128,12 @@ func parsePath(ctx context.Context, r *http.Request) (context.Context, error) {
 	}
 
 	if err != nil {
-		return ctx, newError(404, err.Error(), msgInvalidURL)
+		return "", nil, newError(404, err.Error(), msgInvalidURL)
 	}
 
 	if !isAllowedSource(imageURL) {
-		return ctx, newError(404, "Invalid source", msgInvalidSource)
+		return "", nil, newError(404, "Invalid source", msgInvalidSource)
 	}
 
-	ctx = context.WithValue(ctx, imageURLCtxKey, imageURL)
-	ctx = context.WithValue(ctx, processingOptionsCtxKey, po)
-
-	return ctx, nil
-}
-
-func getImageURL(ctx context.Context) string {
-	str, _ := ctx.Value(imageURLCtxKey).(string)
-	return str
-}
-
-func getProcessingOptions(ctx context.Context) *processingOptions {
-	return ctx.Value(processingOptionsCtxKey).(*processingOptions)
+	return imageURL, po, nil
 }

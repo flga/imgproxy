@@ -16,10 +16,6 @@ import (
 var (
 	downloadClient *http.Client
 
-	imageDataCtxKey          = ctxKey("imageData")
-	cacheControlHeaderCtxKey = ctxKey("cacheControlHeader")
-	expiresHeaderCtxKey      = ctxKey("expiresHeader")
-
 	errSourceDimensionsTooBig      = newError(422, "Source image dimensions are too big", "Invalid source image")
 	errSourceResolutionTooBig      = newError(422, "Source image resolution is too big", "Invalid source image")
 	errSourceFileTooBig            = newError(422, "Source image file is too big", "Invalid source image")
@@ -172,9 +168,7 @@ func requestImage(imageURL string) (*http.Response, error) {
 	return res, nil
 }
 
-func downloadImage(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	imageURL := getImageURL(ctx)
-
+func downloadImage(ctx context.Context, imageURL string) (d *imageData, cacheControl, expires string, done context.CancelFunc, err error) {
 	if newRelicEnabled {
 		newRelicCancel := startNewRelicSegment(ctx, "Downloading image")
 		defer newRelicCancel()
@@ -189,31 +183,13 @@ func downloadImage(ctx context.Context) (context.Context, context.CancelFunc, er
 		defer res.Body.Close()
 	}
 	if err != nil {
-		return ctx, func() {}, err
+		return nil, "", "", func() {}, err
 	}
 
 	imgdata, err := readAndCheckImage(res.Body, int(res.ContentLength))
 	if err != nil {
-		return ctx, func() {}, err
+		return nil, "", "", func() {}, err
 	}
 
-	ctx = context.WithValue(ctx, imageDataCtxKey, imgdata)
-	ctx = context.WithValue(ctx, cacheControlHeaderCtxKey, res.Header.Get("Cache-Control"))
-	ctx = context.WithValue(ctx, expiresHeaderCtxKey, res.Header.Get("Expires"))
-
-	return ctx, imgdata.Close, err
-}
-
-func getImageData(ctx context.Context) *imageData {
-	return ctx.Value(imageDataCtxKey).(*imageData)
-}
-
-func getCacheControlHeader(ctx context.Context) string {
-	str, _ := ctx.Value(cacheControlHeaderCtxKey).(string)
-	return str
-}
-
-func getExpiresHeader(ctx context.Context) string {
-	str, _ := ctx.Value(expiresHeaderCtxKey).(string)
-	return str
+	return imgdata, res.Header.Get("Cache-Control"), res.Header.Get("Expires"), imgdata.Close, err
 }

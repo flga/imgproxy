@@ -566,14 +566,14 @@ vips_arrayjoin_go(VipsImage **in, VipsImage **out, int n) {
 }
 
 int
-vips_jpegsave_go(VipsImage *in, void **buf, size_t *len, int quality, int interlace, gboolean strip) {
-  return vips_jpegsave_buffer(in, buf, len, "profile", "none", "Q", quality, "strip", strip, "optimize_coding", TRUE, "interlace", interlace, NULL);
+vips_jpegsave_go(VipsImage *in, VipsTarget *target, int quality, int interlace, gboolean strip) {
+  return vips_jpegsave_target(in, target, "profile", "none", "Q", quality, "strip", strip, "optimize_coding", TRUE, "interlace", interlace, NULL);
 }
 
 int
-vips_pngsave_go(VipsImage *in, void **buf, size_t *len, int interlace, int quantize, int colors) {
-  return vips_pngsave_buffer(
-    in, buf, len,
+vips_pngsave_go(VipsImage *in, VipsTarget *target, int interlace, int quantize, int colors) {
+  return vips_pngsave_target(
+    in, target,
     "profile", "none",
     "filter", VIPS_FOREIGN_PNG_FILTER_NONE,
     "interlace", interlace,
@@ -585,14 +585,14 @@ vips_pngsave_go(VipsImage *in, void **buf, size_t *len, int interlace, int quant
 }
 
 int
-vips_webpsave_go(VipsImage *in, void **buf, size_t *len, int quality, gboolean strip) {
-  return vips_webpsave_buffer(in, buf, len, "Q", quality, "strip", strip, NULL);
+vips_webpsave_go(VipsImage *in, VipsTarget *target, int quality, gboolean strip) {
+  return vips_webpsave_target(in, target, "Q", quality, "strip", strip, NULL);
 }
 
 int
-vips_gifsave_go(VipsImage *in, void **buf, size_t *len) {
+vips_gifsave_go(VipsImage *in, VipsTarget *target) {
 #if VIPS_SUPPORT_MAGICK
-  return vips_magicksave_buffer(in, buf, len, "format", "gif", NULL);
+  return vips_image_write_to_target(in, ".gif", target, NULL);
 #else
   vips_error("vips_gifsave_go", "Saving GIF is not supported (libvips 8.7+ reuired)");
   return 1;
@@ -600,9 +600,9 @@ vips_gifsave_go(VipsImage *in, void **buf, size_t *len) {
 }
 
 int
-vips_tiffsave_go(VipsImage *in, void **buf, size_t *len, int quality) {
+vips_tiffsave_go(VipsImage *in, VipsTarget *target, int quality) {
 #if VIPS_SUPPORT_TIFF
-  return vips_tiffsave_buffer(in, buf, len, "Q", quality, NULL);
+  return vips_image_write_to_target(in, ".tiff", target, "Q", quality, NULL);
 #else
   vips_error("vips_tiffsave_go", "Saving TIFF is not supported (libvips 8.6+ reuired)");
   return 1;
@@ -610,9 +610,9 @@ vips_tiffsave_go(VipsImage *in, void **buf, size_t *len, int quality) {
 }
 
 int
-vips_avifsave_go(VipsImage *in, void **buf, size_t *len, int quality) {
+vips_avifsave_go(VipsImage *in, VipsTarget *target, int quality) {
 #if VIPS_SUPPORT_AVIF
-  return vips_heifsave_buffer(in, buf, len, "Q", quality, "compression", VIPS_FOREIGN_HEIF_COMPRESSION_AV1, NULL);
+  return vips_heifsave_target(in, target, "Q", quality, "compression", VIPS_FOREIGN_HEIF_COMPRESSION_AV1, NULL);
 #else
   vips_error("vips_avifsave_go", "Saving AVIF is not supported (libvips 8.9+ reuired)");
   return 1;
@@ -620,9 +620,9 @@ vips_avifsave_go(VipsImage *in, void **buf, size_t *len, int quality) {
 }
 
 int
-vips_bmpsave_go(VipsImage *in, void **buf, size_t *len) {
+vips_bmpsave_go(VipsImage *in, VipsTarget *target) {
 #if VIPS_SUPPORT_MAGICK
-  return vips_magicksave_buffer(in, buf, len, "format", "bmp", NULL);
+  return vips_image_write_to_target(in, ".bmp", target, NULL);
 #else
   vips_error("vips_bmpsave_go", "Saving BMP is not supported");
   return 1;

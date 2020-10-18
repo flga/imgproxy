@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"runtime"
 
@@ -646,33 +647,33 @@ func getIcoData(imgdata *imageData) (*imageData, error) {
 	return nil, fmt.Errorf("Can't load %s from ICO", meta.Format())
 }
 
-func saveImageToFitBytes(po *processingOptions, img *vipsImage) ([]byte, context.CancelFunc, error) {
-	var diff float64
-	quality := po.Quality
+// func saveImageToFitBytes(po *processingOptions, img *vipsImage) ([]byte, context.CancelFunc, error) {
+// 	var diff float64
+// 	quality := po.Quality
 
-	img.CopyMemory()
+// 	img.CopyMemory()
 
-	for {
-		result, cancel, err := img.Save(po.Format, quality, po.StripMetadata)
-		if len(result) <= po.MaxBytes || quality <= 10 || err != nil {
-			return result, cancel, err
-		}
-		cancel()
+// 	for {
+// 		result, cancel, err := img.Save(po.Format, quality, po.StripMetadata)
+// 		if len(result) <= po.MaxBytes || quality <= 10 || err != nil {
+// 			return result, cancel, err
+// 		}
+// 		cancel()
 
-		delta := float64(len(result)) / float64(po.MaxBytes)
-		switch {
-		case delta > 3:
-			diff = 0.25
-		case delta > 1.5:
-			diff = 0.5
-		default:
-			diff = 0.75
-		}
-		quality = int(float64(quality) * diff)
-	}
-}
+// 		delta := float64(len(result)) / float64(po.MaxBytes)
+// 		switch {
+// 		case delta > 3:
+// 			diff = 0.25
+// 		case delta > 1.5:
+// 			diff = 0.5
+// 		default:
+// 			diff = 0.75
+// 		}
+// 		quality = int(float64(quality) * diff)
+// 	}
+// }
 
-func processImage(ctx context.Context) ([]byte, context.CancelFunc, error) {
+func processImage(ctx context.Context, w io.Writer, po *processingOptions, imgdata *imageData) (context.CancelFunc, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -687,38 +688,22 @@ func processImage(ctx context.Context) ([]byte, context.CancelFunc, error) {
 
 	defer vipsCleanup()
 
-	po := getProcessingOptions(ctx)
-	imgdata := getImageData(ctx)
-
-	if po.Format == imageTypeUnknown {
-		switch {
-		case po.PreferWebP && imageTypeSaveSupport(imageTypeWEBP):
-			po.Format = imageTypeWEBP
-		case imageTypeSaveSupport(imgdata.Type) && imageTypeGoodForWeb(imgdata.Type):
-			po.Format = imgdata.Type
-		default:
-			po.Format = imageTypeJPEG
-		}
-	} else if po.EnforceWebP && imageTypeSaveSupport(imageTypeWEBP) {
-		po.Format = imageTypeWEBP
-	}
-
 	if po.Format == imageTypeSVG {
 		if imgdata.Type != imageTypeSVG {
-			return []byte{}, func() {}, errConvertingNonSvgToSvg
+			return func() {}, errConvertingNonSvgToSvg
 		}
 
-		return imgdata.Data, func() {}, nil
+		return func() {}, nil
 	}
 
 	if imgdata.Type == imageTypeSVG && !vipsTypeSupportLoad[imageTypeSVG] {
-		return []byte{}, func() {}, errSourceImageTypeNotSupported
+		return func() {}, errSourceImageTypeNotSupported
 	}
 
 	if imgdata.Type == imageTypeICO {
 		icodata, err := getIcoData(imgdata)
 		if err != nil {
-			return nil, func() {}, err
+			return func() {}, err
 		}
 
 		imgdata = icodata
@@ -755,26 +740,26 @@ func processImage(ctx context.Context) ([]byte, context.CancelFunc, error) {
 	defer img.Clear()
 
 	if err := img.Load(imgdata.Data, imgdata.Type, 1, 1.0, pages); err != nil {
-		return nil, func() {}, err
+		return func() {}, err
 	}
 
 	if animationSupport && img.IsAnimated() {
 		if err := transformAnimated(ctx, img, imgdata.Data, po, imgdata.Type); err != nil {
-			return nil, func() {}, err
+			return func() {}, err
 		}
 	} else {
 		if err := transformImage(ctx, img, imgdata.Data, po, imgdata.Type); err != nil {
-			return nil, func() {}, err
+			return func() {}, err
 		}
 	}
 
 	if err := copyMemoryAndCheckTimeout(ctx, img); err != nil {
-		return nil, func() {}, err
+		return func() {}, err
 	}
 
 	if po.MaxBytes > 0 && canFitToBytes(po.Format) {
-		return saveImageToFitBytes(po, img)
+		// return saveImageToFitBytes(po, img)
 	}
 
-	return img.Save(po.Format, po.Quality, po.StripMetadata)
+	return img.Save(w, po.Format, po.Quality, po.StripMetadata)
 }
